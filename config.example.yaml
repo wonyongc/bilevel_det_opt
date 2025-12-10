@@ -1,0 +1,59 @@
+environment:
+  mode: key4hep  # options: key4hep (default), spack
+
+key4hep:
+  setup_script: /cvmfs/sw.hsf.org/key4hep/setup.sh -r 2025-01-28
+
+spack:
+  spack_repo_root: /home/wonyongc/src/hep/bilevel_det_opt/spack
+  key4hep_repo_root: /home/wonyongc/src/hep/bilevel_det_opt/key4hep-spack
+  spack_env_dir: /home/wonyongc/src/hep/bilevel_det_opt/spack_envs/minimal_dd4hep/env
+  use_external: false
+
+detectors:
+  scepcal:
+    repo_root: /home/wonyongc/src/hep/SCEPCal
+    source_script: /home/wonyongc/src/hep/SCEPCal/install/bin/thisScepcal.sh
+    steering_template: /home/wonyongc/src/hep/SCEPCal/scripts/scepcal_steering_template.py
+    compact_xml: /home/wonyongc/src/hep/SCEPCal/compact/SCEPCal.xml
+
+# Runtime + job scheduler
+runtime:
+  runs_dir: /home/wonyongc/src/hep/bilevel_det_opt/runs
+  ddsim_executable: ddsim
+  scheduler:
+    slurm:
+      partition: physics
+      constraint: cascade
+      cpus_per_task: 1
+      mem: 12G
+      time: "60:00:00"
+      mail_user: wonyongc@princeton.edu
+      mail_type: all
+
+# Simulation inputs + geometry sweep.
+batch:
+  detector_label: scepcal
+  seeds:
+    start: 1
+    end: 2
+  particles: [e-,gamma,pi0]
+  events: 1000
+  momentum_GeV: 50
+  plusminus_percent: 0
+  filter: ""
+  filtercut1: 0
+  filtercut2: 0
+  theta_min: 60
+  theta_max: 120
+
+  geometry:
+    parameter: scepcal_xtal_theta_width
+    start: 1.0
+    stop: 2.0
+    step: 0.1
+    unit: cm
+
+# Global options.
+submit: false
+state_dir: .state

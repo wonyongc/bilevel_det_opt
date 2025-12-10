@@ -1,0 +1,39 @@
+spack:
+  view: true
+  include:
+  - ./packages.yaml
+  config:
+    install_tree:
+      root: @SPACK_OPT_ROOT@
+  specs:
+  - root cxxstd=17
+  - geant4
+  - podio
+  - edm4hep
+  - dd4hep
+  - lcio
+  concretizer:
+    unify: true
+  modules:
+    default:
+      enable:
+      - tcl
+      roots:
+        tcl: @MODULE_ROOT@
+      tcl:
+        all:
+          autoload: direct
+  compilers:
+  - compiler:
+      spec: gcc@=11.5.0
+      paths:
+        cc: /usr/bin/gcc
+        cxx: /usr/bin/g++
+        f77: /usr/bin/gfortran
+        fc: /usr/bin/gfortran
+      flags: {}
+      operating_system: rhel9
+      target: x86_64
+      modules: []
+      environment: {}
+      extra_rpaths: []

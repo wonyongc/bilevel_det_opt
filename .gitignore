@@ -1,0 +1,4 @@
+.state/
+runs/
+*.pyc
+__pycache__/

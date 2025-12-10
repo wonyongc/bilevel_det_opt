@@ -1,0 +1,15 @@
+#%Module1.0
+
+proc ModulesHelp { } {
+   puts stderr "This module adds the SCEPCal simulation"
+}
+ 
+module-whatis { This module adds SCEPCal simulation LD_LIBRARY_PATH }
+
+module load dd4hep/1.30-gcc-11.5.0-qvl4m5n
+module load geant4/11.2.2-gcc-11.5.0-xlthtaz
+module load edm4hep/0.99-gcc-11.5.0-jstgso3
+module load podio/1.1-gcc-11.5.0-cu2lads
+module load root/6.32.04-gcc-11.5.0-isbaflt
+
+prepend-path LD_LIBRARY_PATH @DETECTOR_INSTALL_LIB@
