@@ -1,3 +1,17 @@
 runs/
 *.pyc
 __pycache__/
+# data and outputs live on pscratch/CFS, not in git
+*.root
+*.hepmc
+*.npz
+*.h5
+*.bp
+*.pre_es
+*.pre_fft
+slurm-*.out
+__pycache__/
+*.orig
+*.orig2
+*.v1
+*.before-bake

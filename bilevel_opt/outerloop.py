@@ -1,4 +1,13 @@
-"""Step 3: geometry sweep — generate compact XML and SLURM files."""
+"""Step 3: geometry sweep — generate compact XML and SLURM files.
+
+With MDI overlay (optional): if config["_mdi_scenarios"] is set by the
+pipeline, generate_runs iterates over MDI scenarios as an additional axis.
+Each (geometry, scenario) cell gets:
+  - swept MDI parameters merged into geom_values (so the inner loop and
+    its heatmaps can plot them as axes with zero code changes)
+  - --inputFiles <hepmc> appended to ddsim (DD4hep's native overlay path)
+  - scenario label folded into the run tag and slug
+"""
 
 from __future__ import annotations
 
@@ -12,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from bilevel_opt.util import detector_cfg, env_setup_cmd, log, manifest_path, output_dir, runs_dir
+from bilevel_opt.geometry.sibling_resolver import link_siblings, summarize
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +160,10 @@ def _update_compact_include(
     old_dimensions: Path,
     new_dimensions: Path,
 ) -> None:
-    """Copy the top-level compact XML and rewrite the <include> to point to the new dimensions file."""
+    """Copy the top-level compact XML and rewrite the <include> to point to the
+    new dimensions file. Then symlink all other referenced siblings into the
+    run dir so ddsim can resolve them.
+    """
     tree = ET.parse(base_xml)
     root = tree.getroot()
     old_ref = str(old_dimensions)
@@ -166,7 +179,15 @@ def _update_compact_include(
     target_xml.parent.mkdir(parents=True, exist_ok=True)
     tree.write(target_xml)
     log(f"Created compact XML {target_xml} with include -> {new_dimensions}")
-
+ 
+    # NEW: resolve and symlink all remaining sibling refs into the run dir,
+    # so ddsim can find them when loaded from target_xml.parent.
+    manifest = link_siblings(
+        generated_compact=target_xml,
+        source_compact=base_xml,
+        run_dir=target_xml.parent,
+    )
+    log(summarize(manifest))
 
 def _ddsim_cmd(
     config: dict,
@@ -180,8 +201,14 @@ def _ddsim_cmd(
     theta_min: float,
     theta_max: float,
     seed: int,
+    mdi_hepmc: Optional[Path] = None,
 ) -> str:
-    """Build the ddsim command line using native dd4hep options."""
+    """Build the ddsim command line using native dd4hep options.
+
+    If mdi_hepmc is provided, the HepMC overlay is appended via --inputFiles.
+    dd4hep merges the gun-generated primaries with the HepMC primaries
+    event-by-event, producing signal + MDI-background mixed events.
+    """
     ddsim = config["runtime"]["ddsim_executable"]
     parts = [
         ddsim,
@@ -200,6 +227,8 @@ def _ddsim_cmd(
     parts.append(f"--gun.momentumMax {mom_max}*GeV")
     if plusminus_frac > 0:
         parts.append("--gun.distribution uniform")
+    if mdi_hepmc is not None:
+        parts.append(f"--inputFiles {mdi_hepmc}")
     return " \\\n    ".join(parts)
 
 
@@ -218,6 +247,7 @@ def _slurm_text(config: dict, job_name: str, ddsim_cmd: str, slurm_dir: Path) ->
         ("nodes", "nodes"), ("ntasks", "ntasks"),
         ("partition", "partition"), ("constraint", "constraint"),
         ("mail_type", "mail-type"), ("mail_user", "mail-user"),
+        ("account", "account"), ("qos", "qos"),
     ]:
         if key in slurm_cfg:
             lines.append(f"#SBATCH --{flag}={slurm_cfg[key]}")
@@ -226,15 +256,44 @@ def _slurm_text(config: dict, job_name: str, ddsim_cmd: str, slurm_dir: Path) ->
 
 
 # ---------------------------------------------------------------------------
+# MDI scenario helpers
+# ---------------------------------------------------------------------------
+def _resolve_mdi_axis(config: dict) -> list:
+    """Return the list of (scenario, artifacts) tuples to iterate over.
+
+    Falls back to a single no-op scenario if MDI wasn't set up, so the main
+    Cartesian product is uniform regardless of MDI being enabled.
+    """
+    scenarios = config.get("_mdi_scenarios")
+    if scenarios:
+        return scenarios
+    # No MDI: use a single placeholder. Lazy-import to avoid circular dep.
+    from bilevel_opt.mdi import MDIScenario, MDIConfig, MDIArtifacts
+    return [(
+        MDIScenario(cfg=MDIConfig(enabled=False), label="no_mdi", params={}),
+        MDIArtifacts(hepmc_path=None),
+    )]
+
+
+def _scenario_slug(label: str) -> str:
+    """Filesystem-safe scenario label fragment for tags and dirs."""
+    return label.replace(".", "p").replace("/", "-").replace(" ", "")
+
+
+# ---------------------------------------------------------------------------
 # Main outer-loop
 # ---------------------------------------------------------------------------
 def generate_runs(config: dict, run_mode: str) -> None:
-    """Generate compact XML, manifest, and run scripts for every geometry combo x seed x particle.
+    """Generate compact XML, manifest, and run scripts for every geometry combo × MDI scenario × seed × particle.
 
     run_mode controls which scripts are written:
         slurm    — one .slurm file per job
         local    — one run_all.sh with all ddsim commands
         generate — manifest only (no run scripts)
+
+    If config["_mdi_scenarios"] is set, the outer product includes an MDI axis.
+    Each scenario's swept parameters are merged into geom_values so the inner
+    loop's existing heatmap/scatter machinery can plot them as axes.
     """
     ol = config["outer_loop"]
     sim = ol["sim"]
@@ -260,6 +319,10 @@ def generate_runs(config: dict, run_mode: str) -> None:
     theta_min = sim["theta_min"]
     theta_max = sim["theta_max"]
 
+    # Resolve MDI scenarios (empty list -> single no-op)
+    mdi_scenarios = _resolve_mdi_axis(config)
+    has_real_mdi = any(art.enabled for _, art in mdi_scenarios)
+
     # Build per-sweep value lists: [(Decimal, formatted_str), ...]
     sweep_points = [
         list(zip(g.values, g.formatted_values())) for g in geometries
@@ -271,66 +334,87 @@ def generate_runs(config: dict, run_mode: str) -> None:
         geom_slug = "_".join(
             f"{g.parameter}-{g.slug(fval)}" for g, (_, fval) in zip(geometries, combo)
         )
-        geom_values: Dict[str, float] = {
+        base_geom_values: Dict[str, float] = {
             g.parameter: float(dec) for g, (dec, _) in zip(geometries, combo)
         }
         xml_updates: List[Tuple[GeometrySweep, str]] = [
             (g, fval) for g, (_, fval) in zip(geometries, combo)
         ]
 
-        for seed in seeds:
-            for particle in particles:
-                tag = f"run{run_idx:04d}"
-                description = (
-                    f"{detector_label}_{particle}_{momentum}x{plusminus_percent}GeV_"
-                    f"{geom_slug}_s{seed}_N{n_events}"
-                )
+        # Geometry XML files are shared across MDI scenarios; only generate once.
+        dims_copy_geom = rd / f"geom_{geom_slug}_dimensions.xml"
+        compact_copy_geom = rd / f"geom_{geom_slug}.xml"
+        _update_dimensions(dimensions_template, dims_copy_geom, xml_updates)
+        _update_compact_include(compact_template, compact_copy_geom,
+                                dimensions_template, dims_copy_geom)
 
-                dims_copy = rd / f"{tag}_dimensions.xml"
-                compact_copy = rd / f"{tag}.xml"
-                output_file = od / f"{tag}.root"
+        for scenario, mdi_art in mdi_scenarios:
+            # Merge MDI swept params into geom_values so the inner loop can
+            # plot them on heatmap axes alongside geometry params. This is
+            # the integration's single key trick: the inner loop is untouched.
+            geom_values = {**base_geom_values, **scenario.params}
+            scen_slug = _scenario_slug(scenario.label) if has_real_mdi else ""
 
-                _update_dimensions(dimensions_template, dims_copy, xml_updates)
-                _update_compact_include(compact_template, compact_copy,
-                                        dimensions_template, dims_copy)
+            for seed in seeds:
+                for particle in particles:
+                    tag = f"run{run_idx:04d}"
+                    desc_parts = [
+                        detector_label, particle,
+                        f"{momentum}x{plusminus_percent}GeV",
+                        geom_slug,
+                    ]
+                    if scen_slug:
+                        desc_parts.append(scen_slug)
+                    desc_parts += [f"s{seed}", f"N{n_events}"]
+                    description = "_".join(desc_parts)
 
-                if seed < 0 or seed >= len(SEED_PRIMES):
-                    raise IndexError(
-                        f"Seed index {seed} out of range (0–{len(SEED_PRIMES) - 1})"
+                    output_file = od / f"{tag}.root"
+
+                    if seed < 0 or seed >= len(SEED_PRIMES):
+                        raise IndexError(
+                            f"Seed index {seed} out of range (0–{len(SEED_PRIMES) - 1})"
+                        )
+
+                    ddsim_cmd = _ddsim_cmd(
+                        config=config,
+                        steering_file=steering_file,
+                        compact_xml=compact_copy_geom,
+                        output_file=output_file,
+                        particle=particle,
+                        momentum_gev=momentum,
+                        plusminus_frac=float(plusminus_percent) / 100.0,
+                        n_events=n_events,
+                        theta_min=theta_min,
+                        theta_max=theta_max,
+                        seed=SEED_PRIMES[seed],
+                        mdi_hepmc=mdi_art.hepmc_path if mdi_art.enabled else None,
                     )
 
-                ddsim_cmd = _ddsim_cmd(
-                    config=config,
-                    steering_file=steering_file,
-                    compact_xml=compact_copy,
-                    output_file=output_file,
-                    particle=particle,
-                    momentum_gev=momentum,
-                    plusminus_frac=float(plusminus_percent) / 100.0,
-                    n_events=n_events,
-                    theta_min=theta_min,
-                    theta_max=theta_max,
-                    seed=SEED_PRIMES[seed],
-                )
+                    entry = {
+                        "run": tag,
+                        "description": description,
+                        "geom_values": geom_values,
+                        "particle": particle,
+                        "seed": seed,
+                        "path": str(output_file),
+                        "ddsim_cmd": ddsim_cmd,
+                    }
+                    if has_real_mdi:
+                        entry["mdi_scenario"] = scenario.label
+                        entry["mdi_params"] = scenario.params
+                        entry["mdi_overlay"] = (
+                            str(mdi_art.hepmc_path) if mdi_art.enabled else None
+                        )
+                    manifest_entries.append(entry)
 
-                manifest_entries.append({
-                    "run": tag,
-                    "description": description,
-                    "geom_values": geom_values,
-                    "particle": particle,
-                    "seed": seed,
-                    "path": str(output_file),
-                    "ddsim_cmd": ddsim_cmd,
-                })
+                    if run_mode == "slurm":
+                        slurm_path = slurm_dir / f"{tag}.slurm"
+                        slurm_content = _slurm_text(config, ddsim_cmd=ddsim_cmd,
+                                                    job_name=tag, slurm_dir=slurm_dir)
+                        slurm_path.write_text(slurm_content)
+                        log(f"Wrote slurm {slurm_path}")
 
-                if run_mode == "slurm":
-                    slurm_path = slurm_dir / f"{tag}.slurm"
-                    slurm_content = _slurm_text(config, ddsim_cmd=ddsim_cmd,
-                                                job_name=tag, slurm_dir=slurm_dir)
-                    slurm_path.write_text(slurm_content)
-                    log(f"Wrote slurm {slurm_path}")
-
-                run_idx += 1
+                    run_idx += 1
 
     # Write manifest
     mp = manifest_path(config)

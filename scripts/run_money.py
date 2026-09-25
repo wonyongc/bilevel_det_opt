@@ -6,12 +6,17 @@ sys.path.insert(0, os.path.expanduser("~/bilevel_det_opt"))
 import bilevel_opt.innerloop as il
 
 RUN = "/pscratch/sd/s/sapta/bilevel/runs/smoke_test_z_pole"
-OUT = os.path.join(RUN, "money"); os.makedirs(OUT, exist_ok=True)
-SAMPLES = {
-    "0x": (RUN + "/sim_outputs/e1GeV_fixed_0x", 0.0),
-    "1x": (RUN + "/sim_outputs/e1GeV_fixed",    1.0),
-    "3x": (RUN + "/sim_outputs/e1GeV_fixed_3x", 3.0),
-}
+OUT = os.path.join(RUN, "money" + os.environ.get("MONEY_TAG", "")); os.makedirs(OUT, exist_ok=True)
+_BASE = os.environ.get("MONEY_SAMPLES_BASE", "")
+if _BASE:   # e.g. MONEY_SAMPLES_BASE=e200MeV_fixed -> <base>_{0x,1x,3x}
+    SAMPLES = {m: (RUN + "/sim_outputs/" + _BASE + "_" + m, x)
+               for m, x in (("0x", 0.0), ("1x", 1.0), ("3x", 3.0))}
+else:       # legacy 1 GeV layout
+    SAMPLES = {
+        "0x": (RUN + "/sim_outputs/e1GeV_fixed_0x", 0.0),
+        "1x": (RUN + "/sim_outputs/e1GeV_fixed",    1.0),
+        "3x": (RUN + "/sim_outputs/e1GeV_fixed_3x", 3.0),
+    }
 labels = sys.argv[1:] or ["1x"]
 il._make_plots = lambda *a, **k: print("[money] built-in plots skipped")
 
@@ -46,7 +51,7 @@ il_cfg = {
        "bounds": [0.0, 0.6], "plot_grid_points": 25},
     ],
   },
-  "score": {"name": "snr_energy", "params": {"sigma0": 1.0}},
+  "score": {"name": os.environ.get("MONEY_SCORE", "snr_energy"), "params": {"sigma0": 1.0}},
 }
 
 res = il.run_inner_loop(man, il_cfg, OUT)

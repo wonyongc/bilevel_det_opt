@@ -88,3 +88,57 @@ class SNREnergyScore:
             for r in reco if r.n_hits > 0
         ]
         return float(np.mean(vals)) if vals else float("-inf")
+
+
+class SNREnergyAccScore:
+    """Score = (1/N_events) * sum( E_cluster / (sigma0*sqrt(n_hits)) ).
+
+    Same per-event statistic as snr_energy, but averaged over ALL events,
+    with empty events contributing zero -- i.e. snr_energy multiplied by
+    the acceptance.  Removes the degenerate maximum at extreme thresholds
+    that keeps only a handful of seed-energy-tail events (acc ~ 1e-3 at
+    the snr_energy optimum).  All-empty configurations score 0.0 (not
+    -inf), which keeps the DE landscape finite and smooth.
+    """
+    name = "snr_energy_acc"
+
+    def __init__(self, sigma0: float):
+        self.sigma0 = float(sigma0)
+
+    def __call__(self, events, reco) -> float:
+        if not reco:
+            return float("-inf")
+        total = sum(
+            r.E_cluster / (self.sigma0 * math.sqrt(r.n_hits))
+            for r in reco if r.n_hits > 0
+        )
+        return float(total / len(reco))
+
+
+class EResolutionAccScore:
+    """Score = acceptance * mu / sigma_core of the E_cluster distribution.
+
+    Truth-anchored for monochromatic gun samples: mu = median E_cluster,
+    sigma_core = 0.5*(q84 - q16).  Unlike snr_energy(_acc), collecting
+    background energy does not pay: it broadens the distribution and is
+    penalized through sigma.  Guards: <10 surviving events or a degenerate
+    zero-width spike score 0.0 (closes the tail-cherry-picking hole).
+    sigma0 accepted for config compatibility; unused.
+    """
+    name = "eres_acc"
+
+    def __init__(self, sigma0: float = 1.0):
+        self.sigma0 = float(sigma0)
+
+    def __call__(self, events, reco) -> float:
+        E = [r.E_cluster for r in reco if r.n_hits > 0 and r.E_cluster > 0]
+        if len(reco) == 0 or len(E) < 10:
+            return 0.0
+        a = np.asarray(E)
+        acc = len(E) / len(reco)
+        mu = float(np.median(a))
+        q16, q84 = np.percentile(a, [16.0, 84.0])
+        sig = 0.5 * (q84 - q16)
+        if sig <= 0.0:
+            return 0.0
+        return float(acc * mu / sig)

@@ -1,6 +1,7 @@
 """Algorithm and score registries - looked up by name from config."""
 
-from bilevel_opt.algorithms.seeded_radius_cog import SeededRadiusCoG, SNREnergyScore
+from bilevel_opt.algorithms.seeded_radius_cog import (
+    SeededRadiusCoG, SNREnergyScore, SNREnergyAccScore, EResolutionAccScore)
 
 ALGORITHMS = {
     "seeded_radius_cog": SeededRadiusCoG,
@@ -8,4 +9,6 @@ ALGORITHMS = {
 
 SCORES = {
     "snr_energy": SNREnergyScore,
+    "snr_energy_acc": SNREnergyAccScore,
+    "eres_acc": EResolutionAccScore,
 }
