@@ -19,6 +19,11 @@ else:       # legacy 1 GeV layout
     }
 labels = sys.argv[1:] or ["1x"]
 il._make_plots = lambda *a, **k: print("[money] built-in plots skipped")
+if os.environ.get("MONEY_MIX"):
+    sys.path.insert(0, RUN)
+    import paired_mix
+    paired_mix.install(il)
+    print("[money] PAIRED MIXING: all intensities share the 0x signal events")
 
 entries = []
 for lab in labels:
@@ -29,7 +34,9 @@ for lab in labels:
         assert files, f"no events_*.root in {d}"
         print(f"[money] hadd {len(files)} files -> {merged}")
         subprocess.run(["hadd", "-f", merged] + files, check=True)
-    entries.append({"run": lab, "geom_values": {"mdi_x": x}, "path": merged})
+    entries.append({"run": lab, "geom_values": {"mdi_x": x},
+                    "path": (paired_mix.spec_for(lab, SAMPLES, OUT, RUN)
+                             if os.environ.get("MONEY_MIX") else merged)})
 
 tag = "_".join(labels)
 man = os.path.join(OUT, f"manifest_{tag}.json")
@@ -46,12 +53,12 @@ il_cfg = {
     "optimize_method": "differential_evolution",
     "optimize_params": [
       {"name": "R_cluster_mm",    "label": "Cluster radius R [mm]",
-       "bounds": [0.0, 200.0], "plot_grid_points": 12},
+       "bounds": [0.0, float(os.environ.get("MONEY_RMAX", "200"))], "plot_grid_points": 12},
       {"name": "E_threshold_GeV", "label": "Energy threshold [GeV]",
        "bounds": [0.0, 0.6], "plot_grid_points": 25},
     ],
   },
-  "score": {"name": os.environ.get("MONEY_SCORE", "snr_energy"), "params": {"sigma0": 1.0}},
+  "score": {"name": os.environ.get("MONEY_SCORE", "snr_energy"), "params": dict({"sigma0": 1.0}, **({"E_true": float(os.environ["MONEY_ETRUE"])} if os.environ.get("MONEY_ETRUE") else {}))},
 }
 
 res = il.run_inner_loop(man, il_cfg, OUT)

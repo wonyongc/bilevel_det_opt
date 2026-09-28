@@ -15,3 +15,6 @@ __pycache__/
 *.orig2
 *.v1
 *.before-bake
+*.log
+*.png
+Backtrace.*

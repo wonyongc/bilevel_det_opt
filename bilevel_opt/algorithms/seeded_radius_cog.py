@@ -142,3 +142,31 @@ class EResolutionAccScore:
         if sig <= 0.0:
             return 0.0
         return float(acc * mu / sig)
+
+
+class EResolutionTrueScore:
+    """Score = acceptance * E_true / sigma_core(E_cluster).
+
+    Absolute core width normalized by the TRUE gun energy. Unlike eres_acc
+    (mu/sigma), an additive background pedestal cannot raise the score: it
+    shifts mu but not E_true, and its fluctuations widen sigma.  Bias
+    (median/E_true) is a diagnostic, not scored: a known pedestal can be
+    subtracted by calibration, its fluctuations cannot.
+    """
+    name = "eres_true"
+
+    def __init__(self, sigma0: float = 1.0, E_true: float = 1.0):
+        self.sigma0 = float(sigma0)
+        self.E_true = float(E_true)
+
+    def __call__(self, events, reco) -> float:
+        E = [r.E_cluster for r in reco if r.n_hits > 0 and r.E_cluster > 0]
+        if len(reco) == 0 or len(E) < 10:
+            return 0.0
+        a = np.asarray(E)
+        acc = len(E) / len(reco)
+        q16, q84 = np.percentile(a, [16.0, 84.0])
+        sig = 0.5 * (q84 - q16)
+        if sig <= 0.0:
+            return 0.0
+        return float(acc * self.E_true / sig)
