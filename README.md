@@ -62,6 +62,15 @@ config.example.yaml          — starting-point configuration
 
 Also available as `python -m bilevel_opt --config myconfig.yaml`.
 
+
+## MDI energy scan and full detectors
+
+`bilevel_opt/mdi/escan/` holds the WarpX pair-background energy scan at the four FCC-ee working points
+(decks, HepMC3 conversion, standalone crystal geometries, inner-loop campaign v3, figures), and
+`bilevel_opt/mdi/escan/fulldet/` the same chain in the full CLD_o2_v08, ALLEGRO_o1_v03 and IDEA_o2_v01
+detector models (campaign v4 and its bootstrap collection). See `README_escan.md` and
+`fulldet/README_fulldet.md`.
+
 ## How it works
 
 ### Outer loop
