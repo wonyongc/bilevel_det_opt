@@ -44,18 +44,18 @@ json.dump(entries, open(man, "w"), indent=1)
 
 il_cfg = {
   "tree_name": "events",
-  "branches": [{"name": "SCEPCal_MainEdep", "hit_type": "SimCalorimeterHit"}],
+  "branches": [{"name": os.environ.get("MONEY_BRANCH", "SCEPCal_MainEdep"), "hit_type": "SimCalorimeterHit"}],
   "max_events": None,
   "geometry_labels": {"mdi_x": "MDI overlay intensity [x nominal]"},
   "heatmap": {"axes": ["mdi_x"]},
   "algorithm": {
-    "name": "seeded_radius_cog", "params": {"branch": "SCEPCal_MainEdep"},
+    "name": "seeded_radius_cog", "params": {"branch": os.environ.get("MONEY_BRANCH", "SCEPCal_MainEdep"), "seed_window_mm": float(os.environ.get("MONEY_SEEDWIN", "0")), "metric": os.environ.get("MONEY_METRIC", "xy")},
     "optimize_method": "differential_evolution",
     "optimize_params": [
       {"name": "R_cluster_mm",    "label": "Cluster radius R [mm]",
        "bounds": [0.0, float(os.environ.get("MONEY_RMAX", "200"))], "plot_grid_points": 12},
       {"name": "E_threshold_GeV", "label": "Energy threshold [GeV]",
-       "bounds": [0.0, 0.6], "plot_grid_points": 25},
+       "bounds": [0.0, float(os.environ.get("MONEY_ETHRMAX", "0.6"))], "plot_grid_points": 25},
     ],
   },
   "score": {"name": os.environ.get("MONEY_SCORE", "snr_energy"), "params": dict({"sigma0": 1.0}, **({"E_true": float(os.environ["MONEY_ETRUE"])} if os.environ.get("MONEY_ETRUE") else {}))},

@@ -32,11 +32,18 @@ class ClusterReco:
 
 class SeededRadiusCoG:
     """
-    Clustering: find highest-energy hit (seed), collect hits within radius R
-    that pass an energy threshold, compute energy-weighted center-of-gravity.
+    Clustering: find the seed, collect hits within radius R of it that pass an energy
+    threshold, compute the energy-weighted center-of-gravity.
 
     Constructor params (from config algorithm.params):
-        branch (str) — which branch to cluster on
+        branch (str)           — which branch to cluster on
+        seed_window_mm (float) — 0 (default): seed = highest-energy hit. > 0: seed = the hit
+                                 with the largest energy sum within this transverse window
+                                 (follows a shower, not an isolated energetic hit); independent
+                                 of the optimized params, cached per event
+        metric (str)           — "xy" (default): R cuts on the x-y distance to the seed;
+                                 "pointing": on the distance perpendicular to the IP->seed
+                                 line (depth along the shower axis does not count)
 
     Optimized params:
         R_cluster_mm (float)     — radius cut around seed
@@ -44,8 +51,45 @@ class SeededRadiusCoG:
     """
     name = "seeded_radius_cog"
 
-    def __init__(self, branch: str):
+    def __init__(self, branch: str, seed_window_mm: float = 0.0, metric: str = "xy"):
         self.branch = branch
+        self.seed_window_mm = float(seed_window_mm)
+        if metric not in ("xy", "pointing"):
+            raise ValueError(f"metric must be 'xy' or 'pointing', got {metric!r}")
+        self.metric = metric
+
+    @staticmethod
+    def _geom(ev):
+        """Positions (n,3) and radii (n,), cached on the collection."""
+        g = getattr(ev, "_geom", None)
+        if g is None:
+            P = np.stack([np.asarray(ev.x, float), np.asarray(ev.y, float), np.asarray(ev.z, float)], axis=1)
+            r = np.linalg.norm(P, axis=1)
+            r[r == 0.0] = 1.0
+            g = (P, r)
+            ev._geom = g
+        return g
+
+    def _seed(self, ev) -> int:
+        cache = getattr(ev, "_seed_cache", None)
+        if cache is None:
+            cache = ev._seed_cache = {}
+        s = cache.get(self.seed_window_mm)
+        if s is not None:
+            return s
+        if self.seed_window_mm <= 0.0 or ev.E.size < 2:
+            s = int(np.argmax(ev.E))
+        else:
+            from scipy.spatial import cKDTree
+            P, r = self._geom(ev)
+            R0 = float(np.median(r))
+            Q = P * (R0 / r)[:, None]                      # all hits on one sphere: angular window
+            nb = cKDTree(Q).query_ball_point(Q, self.seed_window_mm)
+            E = np.asarray(ev.E, float)
+            local = np.fromiter((E[idx].sum() for idx in nb), float, count=len(nb))
+            s = int(np.argmax(local))
+        cache[self.seed_window_mm] = s
+        return s
 
     def reconstruct(self, events, params: Dict[str, float]) -> List[ClusterReco]:
         R2 = float(params["R_cluster_mm"]) ** 2
@@ -56,10 +100,16 @@ class SeededRadiusCoG:
             if ev.E.size == 0:
                 out.append(ClusterReco(0.0, np.nan, np.nan, 0))
                 continue
-            seed = int(np.argmax(ev.E))
-            dx = ev.x - ev.x[seed]
-            dy = ev.y - ev.y[seed]
-            sel = ((dx * dx + dy * dy) <= R2) & (ev.E >= E_thr)
+            seed = self._seed(ev)
+            if self.metric == "pointing":
+                P, r = self._geom(ev)
+                Q = P * (r[seed] / r)[:, None]
+                d2 = np.sum((Q - Q[seed]) ** 2, axis=1)
+            else:
+                dx = ev.x - ev.x[seed]
+                dy = ev.y - ev.y[seed]
+                d2 = dx * dx + dy * dy
+            sel = (d2 <= R2) & (ev.E >= E_thr)
             if not np.any(sel):
                 out.append(ClusterReco(0.0, np.nan, np.nan, 0))
                 continue
@@ -170,3 +220,36 @@ class EResolutionTrueScore:
         if sig <= 0.0:
             return 0.0
         return float(acc * self.E_true / sig)
+
+
+class EResolutionCalScore:
+    """eres_cal v2: score = min(mu, E_cal) / sigma_core over ALL events.
+
+    E_cluster of every event enters, with 0 for an event that produced no cluster;
+    mu = median, sigma_core = 0.5*(q84 - q16) of that full array; E_cal = the median energy
+    the calorimeter deposits for this gun energy without background (passed as E_true).
+    Keeping the empty events at zero closes the threshold hole of the survivors-only
+    definition (v1, acceptance * mu/sigma of the survivors): a per-hit threshold that
+    rejects events can only widen the distribution (below 84 % acceptance q16 sits at 0),
+    so a threshold pays only by removing background hits. Below containment (mu < E_cal)
+    the score is the relative resolution, so a cluster that collects a fraction of the
+    shower is penalized; at and above containment it is E_cal/sigma, so an additive
+    background pedestal cannot raise it (eres_true's property). For a homogeneous
+    calorimeter E_cal = E_true. Guards: < 10 events, mu <= 0 or zero width score 0.0.
+    """
+    name = "eres_cal"
+
+    def __init__(self, sigma0: float = 1.0, E_true: float = 1.0):
+        self.sigma0 = float(sigma0)
+        self.E_cal = float(E_true)
+
+    def __call__(self, events, reco) -> float:
+        if len(reco) < 10:
+            return 0.0
+        a = np.asarray([r.E_cluster if (r.n_hits > 0 and r.E_cluster > 0) else 0.0 for r in reco], float)
+        mu = float(np.median(a))
+        q16, q84 = np.percentile(a, [16.0, 84.0])
+        sig = 0.5 * (q84 - q16)
+        if sig <= 0.0 or mu <= 0.0:
+            return 0.0
+        return float(min(mu, self.E_cal) / sig)
