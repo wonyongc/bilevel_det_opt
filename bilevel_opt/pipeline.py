@@ -5,19 +5,26 @@ Usage:
     python pipeline.py --config config.yaml [options]
 
 Stages:
+    mdi    - Run WarpX to generate MDI background HepMC overlays (cached per scenario).
     outer  - Source key4hep, generate geometry-scan runs, submit SLURM jobs.
     inner  - Run inner-loop optimization on ROOT outputs from the geometry scan.
-    all    - Run both stages sequentially (default).
+    all    - Run all stages sequentially (default).
 
 The outer loop produces ROOT files. Set run_mode in config (or --run-mode on CLI):
     local     - run ddsim jobs sequentially in the current shell.
     slurm     - submit SLURM batch jobs.
     generate  - only write run scripts (default).
+
+MDI overlay (optional): if cfg["mdi"]["enabled"] is true, the MDI stage runs WarpX
+to generate beam-induced backgrounds at the IP and overlays them onto every ddsim
+job via --inputFiles. Multiple scenarios under cfg["mdi"]["scenarios"] become an
+additional axis of the outer-loop Cartesian product.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -28,7 +35,7 @@ except ImportError as exc:
 
 from bilevel_opt.outerloop import generate_runs
 from bilevel_opt.util import manifest_path, results_dir, run_local, runs_dir, setup_env, submit_jobs
-from bilevel_opt.innerloop import run_inner_loop
+from bilevel_opt import mdi as mdi_pkg
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -39,10 +46,18 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", default=None, help="Run only the named run (default: all runs).")
     p.add_argument(
         "--stage",
-        choices=["outer", "inner", "all"],
+        choices=["mdi", "outer", "inner", "all"],
         default="all",
         help="Which stage(s) to run (default: all).",
     )
+
+    mdi = p.add_argument_group("MDI overlay")
+    mdi.add_argument("--no-mdi", action="store_true",
+                     help="Force-disable MDI even if config enables it.")
+    mdi.add_argument("--force-mdi", action="store_true",
+                     help="Re-run WarpX even if a cached HepMC exists.")
+    mdi.add_argument("--mdi-scenario", default=None,
+                     help="Restrict to one MDI scenario label (e.g. 'E45.6').")
 
     outer = p.add_argument_group("outer loop")
     outer.add_argument("--run-mode", choices=["local", "slurm", "generate"], default=None,
@@ -75,9 +90,54 @@ def merge_run_config(global_config: dict, run_block: dict) -> dict:
     return merged
 
 
-def run_outer(config: dict, args: argparse.Namespace) -> str:
-    """Run all outer-loop steps. Returns the manifest path for the inner loop."""
+def run_mdi_stage(config: dict, args: argparse.Namespace) -> list:
+    """Expand MDI scenarios, run WarpX (or use cache), and return the list.
+
+    Returns a list of (MDIScenario, MDIArtifacts) tuples. If MDI is disabled,
+    returns a single no-op tuple so callers can iterate uniformly.
+    """
+    if args.no_mdi:
+        config.setdefault("mdi", {})["enabled"] = False
+
+    # MDI cache is keyed by detector + physics params; outerloop's runs_dir
+    # is the per-run subdir, but cache should be shared across runs. Use the
+    # top-level runs_dir for caching.
+    top_runs_dir = Path(config["runtime"]["runs_dir"])
+
+    # Synthesize a minimal "run_cfg" shim: build_mdi_scenarios needs
+    # outer_loop.detector_label, which lives in the merged config.
+    run_cfg_shim = {
+        "outer_loop": config.get("outer_loop", {}),
+        "name": config.get("_run_name", "default"),
+    }
+
+    scenarios = mdi_pkg.build_mdi_scenarios(
+        config, run_cfg_shim,
+        runs_dir=top_runs_dir, force=args.force_mdi,
+    )
+
+    if args.mdi_scenario:
+        scenarios = [(sc, art) for sc, art in scenarios
+                     if sc.label == args.mdi_scenario]
+        if not scenarios:
+            sys.exit(f"--mdi-scenario={args.mdi_scenario!r} matched no scenarios")
+
+    labels = [sc.label for sc, _ in scenarios]
+    print(f"[mdi] Prepared {len(scenarios)} scenario(s): {labels}")
+    return scenarios
+
+
+def run_outer(config: dict, args: argparse.Namespace,
+              mdi_scenarios: list | None = None) -> str:
+    """Run all outer-loop steps. Returns the manifest path for the inner loop.
+
+    If mdi_scenarios is provided, the outer loop iterates over them as an
+    additional axis (geometry × MDI × seeds × particles). The list is attached
+    to the config so generate_runs can read it without a signature change.
+    """
     mode = args.run_mode or config["run_mode"]
+    if mdi_scenarios:
+        config["_mdi_scenarios"] = mdi_scenarios
     generate_runs(config, run_mode=mode)
     if mode == "local":
         run_local(runs_dir(config) / "run_all.sh")
@@ -96,6 +156,7 @@ def run_inner(config: dict, args: argparse.Namespace, mf: str) -> dict:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = make_parser()
     args = parser.parse_args()
 
@@ -116,6 +177,7 @@ def main() -> None:
     for run_block in run_blocks:
         run_name = run_block["name"]
         config = merge_run_config(global_config, run_block)
+        config["_run_name"] = run_name
 
         print()
         print("#" * 60)
@@ -123,16 +185,26 @@ def main() -> None:
         print("#" * 60)
 
         mf = args.manifest
+        mdi_scenarios = None
+
+        if args.stage in ("mdi", "outer", "all"):
+            print("=" * 60)
+            print(f"  MDI STAGE: WarpX background generation [{run_name}]")
+            print("=" * 60)
+            mdi_scenarios = run_mdi_stage(config, args)
+            if args.stage == "mdi":
+                continue
 
         if args.stage in ("outer", "all"):
             print("=" * 60)
             print(f"  OUTER LOOP: geometry sweep generation [{run_name}]")
             print("=" * 60)
-            mf_from_outer = run_outer(config, args)
+            mf_from_outer = run_outer(config, args, mdi_scenarios=mdi_scenarios)
             if mf is None:
                 mf = mf_from_outer
 
         if args.stage in ("inner", "all"):
+            from bilevel_opt.innerloop import run_inner_loop  # lazy: needs ROOT
             if mf is None:
                 mf = str(manifest_path(config))
             print()
