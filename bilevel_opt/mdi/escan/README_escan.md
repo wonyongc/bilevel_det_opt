@@ -21,6 +21,7 @@ in `fulldet/` with its own README.
     # 3. Geant4, background only, standalone crystal geometry ladder
     bash make_bp_geom.sh; bash make_bpas_geom.sh; bash make_lumi_geom.sh     # baseline: geom_scepcal_xtal_lumi.xml
     POINT=Z MODE=1x GTAG=lumi2k GEOM=$RUN/geom_scepcal_xtal_lumi.xml sbatch run_bkgonly_escan.sbatch
+    python escan_edep.py <sample dir names under $RUN/sim_outputs>    # crystal energy per crossing
 
     # 4. Inner loop with paired hit-level mixing (campaign v3), results and figures
     bash campaign_v3.sh submit Z WW ZH tt              # scripts/run_money.py, scripts/paired_mix.py
@@ -37,12 +38,10 @@ in `fulldet/` with its own README.
 | `escan_to_hepmc.py` | WarpX output to HepMC3, one event per crossing (`--mult 3`: three crossings) |
 | `make_bp_geom.sh`, `make_bpas_geom.sh`, `make_lumi_geom.sh` | geometry ladder: field extension, IDEA beam pipe, compensating-solenoid field map, LumiCal |
 | `run_bkgonly_escan.sbatch` | background-only Geant4 simulation of one overlay file (25 x 80 crossings) |
+| `escan_edep.py` | crystal energy per crossing (total, barrel at abs(z) < 2.3 m, endcaps, timing layer) of background-only samples (Table 3 of the paper) |
 | `run_trace.sbatch`, `where_from.py`, `where_enter.py`, `where_bkg.py`, `pair_tail.py` | origin of the crystal energy (Sec. 5.3: the beam-pipe split) |
 | `escan_mdimap.py`, `escan_theta_norm.py`, `escan_figdump.py` | background maps and polar-angle profiles for the figures |
 | `campaign_v3.sh`, `collect_v3.py`, `money_dump.py` | inner-loop campaign v3 and its collection |
+| `campaign_v2.sh`, `collect_v2.py` | campaign v2 (crystals-only, Z): signal and background-only samples, paired-mixing inner loops, collection; the base that campaign v3 and `collect_v3.py` build on |
 | `dump_events_hepmc.py` | HepMC3 events to the geometry explorer's event-display JSON |
 | `figures/` | figure scripts (`make_v3_figs.py`, `make_escan_figs.py`, `make_mdimap_figs.py`, `make_theta_fig.py` + `theta_profile.py`, `make_money_v3.py`, `money_transfer.py` + `make_money_transfer_fig.py`) |
-
-Still to be added from Perlmutter (they were only kept there): `escan_edep.py` (crystal energy per
-crossing, Table 3 of the paper), `campaign_v2.sh` and `collect_v2.py` (used by `campaign_v3.sh` and
-`collect_v3.py`).
