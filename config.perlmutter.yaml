@@ -1,0 +1,83 @@
+# Smoke-test config for Perlmutter — one (geom × MDI scenario) cell, 5 events.
+# Scale up sim.events, geometry sweep, scenarios once this completes end-to-end.
+
+run_mode: local
+
+key4hep:
+  run_setup: false  # we source via the spoof script before invoking pipeline
+
+detectors:
+  scepcal:
+    repo_root: /global/homes/s/sapta/bilevel_det_opt
+    source_script: ""
+    steering_file: /global/homes/s/sapta/bilevel_det_opt/detector_config/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
+    compact_xml: /global/homes/s/sapta/bilevel_det_opt/detector_config/IDEA_o2_v01/IDEA_o2_v01.xml
+    dimensions_xml: /global/homes/s/sapta/bilevel_det_opt/detector_config/IDEA_o2_v01/DectDimensions_IDEA_o2_v01.xml
+
+runtime:
+  runs_dir: /pscratch/sd/s/sapta/bilevel/runs
+  ddsim_executable: ddsim
+  scheduler:
+    slurm:
+      account: m4956
+      constraint: cpu
+      qos: shared
+      cpus_per_task: 1
+      mem: 4G
+      time: "00:30:00"
+
+mdi:
+  enabled: true
+  warpx_executable: /global/homes/s/sapta/src/warpx/build/bin/warpx.3d.MPI.CUDA.DP.PDP.OPMD.EB.QED.GENQEDTABLES
+  n_macroparticles: 2000000
+  beam_energy_GeV: 45.6
+  bunch_charge_nC: 24.0
+  crossing_angle_mrad: 30.0
+  sigma_x_um: 6.4
+  sigma_y_um: 3.0
+  sigma_z_mm: 12.1
+  process: beamstrahlung_pairs
+  n_bx_overlay: 1
+  cache_dir: /global/cfs/cdirs/m4956/sapta/mdi_cache
+  fidelity: formenti
+  launcher: ["srun", "-n", "4", "-G", "4"]
+  scenarios:
+    beam_energy_GeV: [45.6]    # just one scenario for smoke test
+
+runs:
+  - name: smoke_test_z_pole
+    outer_loop:
+      detector_label: scepcal
+      seeds: { start: 0, end: 0 }     # one seed
+      geometry:
+        - parameter: scepcal_xtal_theta_width   # adjust if your DectDimensions uses a different name
+          values: [1.0]
+          unit: cm
+      sim:
+        particles: [e-]
+        events: 5
+        momentum_GeV: 1.0
+        plusminus_percent: 0
+        theta_min: 60
+        theta_max: 120
+
+    inner_loop:
+      tree_name: events
+      branches:
+        - { name: SCEPCal_MainEdep, hit_type: SimCalorimeterHit }
+      geometry_labels:
+        scepcal_xtal_theta_width: Crystal theta width [cm]
+        beam_energy_GeV: Beam energy [GeV]
+      heatmap:
+        axes: [scepcal_xtal_theta_width, beam_energy_GeV]
+      algorithm:
+        name: seeded_radius_cog
+        params: {}
+        optimize_method: differential_evolution
+        optimize_params:
+          - { name: R_cluster_mm,    label: "Cluster radius R [mm]", bounds: [0.0, 200.0], plot_grid_points: 20 }
+          - { name: E_threshold_GeV, label: "Energy threshold [GeV]", bounds: [0.0, 1.0],   plot_grid_points: 10 }
+      score:
+        name: snr_energy
+        params: { sigma0: 1.0 }
+        max_events: null
